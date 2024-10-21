@@ -1,1 +1,1 @@
-# TopologyCalculator
+DD_SITE="datadoghq.eu" DD_API_KEY="<api-key>" go run "main.go"
