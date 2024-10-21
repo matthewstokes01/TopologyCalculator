@@ -185,11 +185,11 @@ func getPodsAndNode(matchLabels map[string]string) map[string]string {
 	}
 	for _, pod := range pods.Items {
 		podName := pod.ObjectMeta.Name
-		if podName == "" {
-			fmt.Printf("Pod %v isn't attached to a node", podName)
+		podNode := pod.Spec.NodeName
+		if podNode == "" {
+			fmt.Printf("Pod %v isn't attached to a node\n", podName)
 			continue
 		}
-		podNode := pod.Spec.NodeName
 		podsToNode[podName] = podNode
 	}
 	return podsToNode
