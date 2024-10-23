@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -15,24 +15,108 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var selectedContext *string
+
+func main() {
+	selectedContext = flag.String("context", "", "The context for the script to target")
+	flag.Parse()
+
+	clusterName := os.Getenv("EKS_CLUSTER_NAME")
+	if clusterName == "" {
+		log.Fatal("Environment Variable 'EKS_CLUSTER_NAME' has not been set")
+	}
+	clientset := createClientSet()
+	for {
+		// Store node name and availability zone in to a map
+		nodeAzMap := populateNodesToAzMapping()
+		// Get all namespaces in the cluster
+		namespaces := getNamespaces()
+
+		for _, ns := range namespaces {
+			DeploymentsClient := clientset.AppsV1().Deployments(ns)
+			deploymentObject, err := DeploymentsClient.List(context.TODO(), metav1.ListOptions{})
+			if err != nil {
+				log.Fatal(err)
+			}
+			if len(deploymentObject.Items) == 0 {
+				fmt.Printf("No Deployments found in %s namespace\n", ns)
+				continue
+			}
+			for _, deployment := range deploymentObject.Items {
+				deploymentName := deployment.ObjectMeta.Name
+				// fmt.Printf("%v:\n", deploymentName)
+				// Get the labels the deployment uses to manage pods
+				deploymentMatchLabels := getDeploymentMatchLabels(deploymentName, ns)
+				// Get all the pods with the labels returned from getDeploymentMatchLabels()
+				listOfPods := getPodsAndNode(deploymentMatchLabels)
+
+				// Populate podsPerAZ with all of the az's available in the cluster, based on nodes in nodeAzMap
+				podsPerAZ := map[string]int{}
+				for _, az := range nodeAzMap {
+					podsPerAZ[az] = 0
+				}
+				// Loop through the list of pods and assign the pod to an AZ
+				for _, podNode := range listOfPods {
+					podAZ := nodeAzMap[podNode]
+					podsPerAZ[podAZ] = podsPerAZ[podAZ] + 1
+				}
+
+				// Sort output by AZ alphabetically
+				keys := make([]string, 0, len(podsPerAZ))
+				for az := range podsPerAZ {
+					keys = append(keys, az)
+				}
+				sort.Strings(keys)
+
+				/* Print the topology of each deployment, example:
+				eu-west-2a: 3
+				eu-west-2b: 7
+				eu-west-2c: 11
+				*/
+				// for _, az := range keys {
+				// 	fmt.Printf("%v: %v\n", az, podsPerAZ[az])
+				// }
+				fmt.Printf("%v: %v", deploymentName, podsPerAZ)
+				// Calculate the max skew, which is the highest number minus the lowest number
+				skew := calculateTopologySkew(podsPerAZ)
+				// Submit the skew to Datadog as a metric so that it can be used foir dashboards and monitors
+				submitSkewMetrics(clusterName, deploymentName, ns, skew)
+				fmt.Printf("Skew: %v\n", skew)
+			}
+		}
+		time.Sleep(time.Second * 30)
+	}
+}
+
 func createClientSet() *kubernetes.Clientset {
-	kubeconfig := filepath.Join(
-		os.Getenv("HOME"), ".kube", "config",
-	)
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	loadingRules.DefaultClientConfig = &clientcmd.DefaultClientConfig
-	loadingRules.ExplicitPath = kubeconfig
-	configOverrides := &clientcmd.ConfigOverrides{
-		ClusterDefaults: clientcmd.ClusterDefaults,
-		CurrentContext:  "",
-	}
-	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides).ClientConfig()
+
+	config, err := rest.InClusterConfig()
 	if err != nil {
-		log.Fatal(err)
+
+		if *selectedContext == "" {
+			log.Fatal("You must provide a context if not running in-cluster")
+		}
+		kubeconfig := filepath.Join(
+			os.Getenv("HOME"), ".kube", "config",
+		)
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		loadingRules.DefaultClientConfig = &clientcmd.DefaultClientConfig
+		loadingRules.ExplicitPath = kubeconfig
+		configOverrides := &clientcmd.ConfigOverrides{
+			ClusterDefaults: clientcmd.ClusterDefaults,
+			CurrentContext:  *selectedContext,
+		}
+
+		config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides).ClientConfig()
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
+
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Fatal(err)
@@ -40,68 +124,7 @@ func createClientSet() *kubernetes.Clientset {
 	return clientset
 }
 
-func main() {
-	clientset := createClientSet()
-	// Store node name and availability zone in to a map
-	nodeAzMap := populateNodesToAzMapping()
-	// Get all namespaces in the cluster
-	namespaces := getNamespaces()
-
-	for _, ns := range namespaces {
-		DeploymentsClient := clientset.AppsV1().Deployments(ns)
-		deploymentObject, err := DeploymentsClient.List(context.TODO(), metav1.ListOptions{})
-		if err != nil {
-			log.Fatal(err)
-		}
-		if len(deploymentObject.Items) == 0 {
-			fmt.Printf("No Deployments found in %s namespace\n", ns)
-			continue
-		}
-		for _, deployment := range deploymentObject.Items {
-			deploymentName := deployment.ObjectMeta.Name
-			fmt.Printf("%v:\n\n", deploymentName)
-			// Get the labels the deployment uses to manage pods
-			deploymentMatchLabels := getDeploymentMatchLabels(deploymentName, ns)
-			// Get all the pods with the labels returned from getDeploymentMatchLabels()
-			listOfPods := getPodsAndNode(deploymentMatchLabels)
-
-			// Populate podsPerAZ with all of the az's available in the cluster, based on nodes in nodeAzMap
-			podsPerAZ := map[string]int{}
-			for _, az := range nodeAzMap {
-				podsPerAZ[az] = 0
-			}
-			// Loop through the list of pods and assign the pod to an AZ
-			for _, podNode := range listOfPods {
-				podAZ := nodeAzMap[podNode]
-				podsPerAZ[podAZ] = podsPerAZ[podAZ] + 1
-			}
-
-			// Sort output by AZ alphabetically
-			keys := make([]string, 0, len(podsPerAZ))
-			for az := range podsPerAZ {
-				keys = append(keys, az)
-			}
-			sort.Strings(keys)
-
-			/* Print the topology of each deployment, example:
-			eu-west-2a: 3
-			eu-west-2b: 7
-			eu-west-2c: 11
-			*/
-			for _, az := range keys {
-				fmt.Printf("%v: %v\n", az, podsPerAZ[az])
-			}
-
-			// Calculate the max skew, which is the highest number minus the lowest number
-			skew := calculateTopologySkew(podsPerAZ)
-			// Submit the skew to Datadog as a metric so that it can be used foir dashboards and monitors
-			// submitSkewMetrics(deploymentName, ns, skew)
-			fmt.Printf("Skew: %v\n\n", skew)
-		}
-	}
-}
-
-func submitSkewMetrics(deployment string, namespace string, skew int) {
+func submitSkewMetrics(clusterName string, deployment string, namespace string, skew int) {
 	body := datadogV2.MetricPayload{
 		Series: []datadogV2.MetricSeries{
 			{
@@ -122,6 +145,10 @@ func submitSkewMetrics(deployment string, namespace string, skew int) {
 						Type: datadog.PtrString("kube_namespace"),
 						Name: datadog.PtrString(namespace),
 					},
+					{
+						Type: datadog.PtrString("kube_cluster_name"),
+						Name: datadog.PtrString(clusterName),
+					},
 				},
 			},
 		},
@@ -130,15 +157,13 @@ func submitSkewMetrics(deployment string, namespace string, skew int) {
 	configuration := datadog.NewConfiguration()
 	apiClient := datadog.NewAPIClient(configuration)
 	api := datadogV2.NewMetricsApi(apiClient)
-	resp, r, err := api.SubmitMetrics(ctx, body, *datadogV2.NewSubmitMetricsOptionalParameters())
+	_, r, err := api.SubmitMetrics(ctx, body, *datadogV2.NewSubmitMetricsOptionalParameters())
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error when calling `MetricsApi.SubmitMetrics`: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Full HTTP response: %v\n", r)
 	}
-
-	responseContent, _ := json.MarshalIndent(resp, "", "  ")
-	fmt.Fprintf(os.Stdout, "Response from `MetricsApi.SubmitMetrics`:\n%s\n", responseContent)
+	fmt.Println("Submitting metrics to Datadog")
 }
 
 func calculateTopologySkew(topologyMap map[string]int) int {

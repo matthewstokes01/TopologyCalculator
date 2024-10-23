@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: monitoring
+  name: monitoring
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  creationTimestamp: "2024-10-21T08:26:10Z"
+  name: topologycalculator-sa
+  namespace: monitoring
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: topologycalculator-role
+  namespace: monitoring
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["namespaces", "nodes", "pods"]
+  verbs: ["get", "list"]
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: topologycalculator
+  namespace: monitoring
+subjects:
+- kind: ServiceAccount
+  name: topologycalculator-sa
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: topologycalculator-role
+  apiGroup: rbac.authorization.k8s.io
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: topologycalculator
+  namespace: monitoring
+spec:
+  selector: 
+    matchLabels: 
+      app: topologycalculator
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: topologycalculator
+    spec:
+      containers:
+        - image: matthewstokes1/topologycalculator:v6
+          name: topologycalculator
+          env:
+          - name: DD_SITE
+            value: "datadoghq.eu"
+          - name: DD_API_KEY
+            value: ""
+          - name: EKS_CLUSTER_NAME
+            value: "test3"
+      serviceAccountName: topologycalculator-sa
