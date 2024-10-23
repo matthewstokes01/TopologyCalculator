@@ -80,12 +80,11 @@ func main() {
 				// for _, az := range keys {
 				// 	fmt.Printf("%v: %v\n", az, podsPerAZ[az])
 				// }
-				fmt.Printf("%v: %v", deploymentName, podsPerAZ)
 				// Calculate the max skew, which is the highest number minus the lowest number
 				skew := calculateTopologySkew(podsPerAZ)
+				fmt.Printf("%v:  skew:%v   topology:%v ", deploymentName, skew, podsPerAZ)
 				// Submit the skew to Datadog as a metric so that it can be used foir dashboards and monitors
 				submitSkewMetrics(clusterName, deploymentName, ns, skew)
-				fmt.Printf("Skew: %v\n", skew)
 			}
 		}
 		time.Sleep(time.Second * 30)
@@ -163,7 +162,6 @@ func submitSkewMetrics(clusterName string, deployment string, namespace string, 
 		fmt.Fprintf(os.Stderr, "Error when calling `MetricsApi.SubmitMetrics`: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Full HTTP response: %v\n", r)
 	}
-	fmt.Println("Submitting metrics to Datadog")
 }
 
 func calculateTopologySkew(topologyMap map[string]int) int {

@@ -59,7 +59,7 @@ spec:
         app: topologycalculator
     spec:
       containers:
-        - image: matthewstokes1/topologycalculator:v6
+        - image: matthewstokes1/topologycalculator:v8
           name: topologycalculator
           env:
           - name: DD_SITE
